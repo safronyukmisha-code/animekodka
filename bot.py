@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import sqlite3
@@ -228,10 +229,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Команды:\n"
             "/list — список всех кодов\n"
             "/del код — удалить запись\n"
-            "/list_bug — открытые баги\n"
-            "/list_reclama — заявки по рекламе\n"
+            "/listbug — открытые баги\n"
+            "/listreclama — заявки по рекламе\n"
             "/close номер — закрыть баг/заявку\n"
-            "/stats — подробная статистика по пользователям",
+            "/stats — подробная статистика по пользователям\n"
+            "/reclamoblodatel текст — разослать сообщение всем пользователям",
             parse_mode="Markdown",
         )
     else:
@@ -431,6 +433,66 @@ async def close_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Заявка #{report_id} не найдена или уже закрыта.")
 
 
+def get_all_user_ids():
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT user_id FROM users").fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("Ничего не нашёл по этому коду 🤷")
+        return
+
+    # Можно либо ответить этой командой на сообщение (текст/фото/видео —
+    # разошлётся как есть), либо написать текст прямо после команды.
+    source_message = update.message.reply_to_message
+    text_after_command = " ".join(context.args) if context.args else None
+
+    if source_message is None and not text_after_command:
+        await update.message.reply_text(
+            "Как разослать сообщение всем подписчикам:\n\n"
+            "1) Просто текст:\n`/reclamoblodatel Новое видео уже в боте!`\n\n"
+            "2) Фото/видео/что угодно: ответь этой командой "
+            "(Reply) на нужное сообщение — оно разошлётся всем как есть.",
+            parse_mode="Markdown",
+        )
+        return
+
+    user_ids = get_all_user_ids()
+    if not user_ids:
+        await update.message.reply_text("Пока нет ни одного пользователя для рассылки.")
+        return
+
+    status_msg = await update.message.reply_text(
+        f"Начинаю рассылку на {len(user_ids)} пользователей..."
+    )
+
+    sent = 0
+    failed = 0
+    for uid in user_ids:
+        try:
+            if source_message is not None:
+                await context.bot.copy_message(
+                    chat_id=uid,
+                    from_chat_id=source_message.chat_id,
+                    message_id=source_message.message_id,
+                )
+            else:
+                await context.bot.send_message(chat_id=uid, text=text_after_command)
+            sent += 1
+        except Exception:
+            failed += 1
+        # небольшая пауза, чтобы не упереться в лимиты Telegram на отправку
+        await asyncio.sleep(0.05)
+
+    await status_msg.edit_text(
+        f"Рассылка завершена ✅\nОтправлено: {sent}\nНе доставлено: {failed}"
+    )
+
+
 async def track_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user is None:
@@ -467,7 +529,6 @@ def main():
 
     # Фикс для новых версий Python (3.12+), где по умолчанию
     # больше не создаётся текущий event loop автоматически.
-    import asyncio
     try:
         asyncio.get_event_loop()
     except RuntimeError:
@@ -482,10 +543,11 @@ def main():
     app.add_handler(CommandHandler("del", del_command))
     app.add_handler(CommandHandler("bug", bug_command))
     app.add_handler(CommandHandler("reclama", reclama_command))
-    app.add_handler(CommandHandler("list_bug", list_bug_command))
-    app.add_handler(CommandHandler("list_reclama", list_reclama_command))
+    app.add_handler(CommandHandler(["list_bug", "listbug"], list_bug_command))
+    app.add_handler(CommandHandler(["list_reclama", "listreclama"], list_reclama_command))
     app.add_handler(CommandHandler("close", close_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("reclamoblodatel", broadcast_command))
     app.add_handler(MessageHandler(filters.ALL, dedup_guard), group=-2)
     app.add_handler(MessageHandler(filters.ALL, track_any_message), group=-1)
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
@@ -496,4 +558,6 @@ def main():
 
 
 if __name__ == "__main__":
+    main()
+ "__main__":
     main()
